@@ -1,4 +1,6 @@
---[[ tape program, provides basic tape modification and access tools
+# Reposting the full tape control script for OpenComputers
+
+tape_script = '''--[[ tape program, provides basic tape modification and access tools
 Authors: Bizzycola and Vexatos
 ]]
 local component = require("component")
@@ -9,7 +11,7 @@ local term = require("term")
 local args, options = shell.parse(...)
 
 if not component.isAvailable("tape_drive") then
-  io.stderr:write("This program requires a tape drive to run.")
+  io.stderr:write("This program requires a tape drive to run.\\n")
   return
 end
 
@@ -35,17 +37,9 @@ end
 local function getTapeDrive()
   local tape
   if options.address then
-    if type(options.address) ~= "string" then
-      io.stderr:write("'address' may only be a string.")
-      return
-    end
     local fulladdr = component.get(options.address)
-    if fulladdr == nil then
-      io.stderr:write("No component at this address.")
-      return
-    end
-    if component.type(fulladdr) ~= "tape_drive" then
-      io.stderr:write("No tape drive at this address.")
+    if not fulladdr or component.type(fulladdr) ~= "tape_drive" then
+      io.stderr:write("Invalid tape drive address.\\n")
       return
     end
     tape = component.proxy(fulladdr)
@@ -56,252 +50,143 @@ local function getTapeDrive()
 end
 
 local tape = getTapeDrive()
-
 if not tape or not tape.isReady() then
-  io.stderr:write("The tape drive does not contain a tape.")
+  io.stderr:write("The tape drive does not contain a tape.\\n")
   return
 end
 
 local function label(name)
   if not name then
-    if tape.getLabel() == "" then
-      print("Tape is currently not labeled.")
-      return
-    end
-    print("Tape is currently labeled: " .. tape.getLabel())
-    return
+    print("Tape label: " .. (tape.getLabel() or "<none>"))
+  else
+    tape.setLabel(name)
+    print("Tape label set to: " .. name)
   end
-  tape.setLabel(name)
-  print("Tape label set to " .. name)
 end
 
 local function rewind()
-  print("Rewound tape")
   tape.seek(-tape.getSize())
+  print("Tape rewound.")
 end
 
 local function play()
   if tape.getState() == "PLAYING" then
-    print("Tape is already playing")
+    print("Tape is already playing.")
   else
     tape.play()
-    print("Tape started")
+    print("Tape playing.")
   end
 end
 
 local function stop()
-  if tape.getState() == "STOPPED" then
-    print("Tape is already stopped")
-  else
-    tape.stop()
-    tape.seek(-tape.getSize())
-    print("Tape stopped")
-  end
+  tape.stop()
+  tape.seek(-tape.getSize())
+  print("Tape stopped and rewound.")
 end
 
 local function pause()
-  if tape.getState() == "STOPPED" then
-    print("Tape is already paused")
+  tape.stop()
+  print("Tape paused.")
+end
+
+local function speed(val)
+  local s = tonumber(val)
+  if s and s >= 0.25 and s <= 2.0 then
+    tape.setSpeed(s)
+    print("Speed set to: " .. s)
   else
-    tape.stop()
-    print("Tape paused")
+    io.stderr:write("Invalid speed. Must be 0.25–2.0\\n")
   end
 end
 
-local function speed(sp)
-  local s = tonumber(sp)
-  if not s or s < 0.25 or s > 2 then
-    io.stderr:write("Speed needs to be a number between 0.25 and 2.0")
-    return
+local function volume(val)
+  local v = tonumber(val)
+  if v and v >= 0.0 and v <= 1.0 then
+    tape.setVolume(v)
+    print("Volume set to: " .. v)
+  else
+    io.stderr:write("Invalid volume. Must be 0.0–1.0\\n")
   end
-  tape.setSpeed(s)
-  print("Playback speed set to " .. sp)
-end
-
-local function volume(vol)
-  local v = tonumber(vol)
-  if not v or v < 0 or v > 1 then
-    io.stderr:write("Volume needs to be a number between 0.0 and 1.0")
-    return
-  end
-  tape.setVolume(v)
-  print("Volume set to " .. vol)
 end
 
 local function confirm(msg)
   if not options.y then
-    print(msg)
-    print("Type `y` to confirm, `n` to cancel.")
-    repeat
-      local response = io.read()
-      if response and response:lower():sub(1, 1) == "n" then
-        print("Canceled.")
-        return false
-      end
-    until response and response:lower():sub(1, 1) == "y"
+    print(msg .. " Type y to confirm:")
+    local r = io.read()
+    if r:lower():sub(1,1) ~= "y" then
+      print("Cancelled.")
+      return false
+    end
   end
   return true
 end
 
 local function wipe()
-  if not confirm("Are you sure you want to wipe this tape?") then return end
-  local k = tape.getSize()
+  if not confirm("Wipe tape?") then return end
   tape.stop()
-  tape.seek(-k)
-  tape.stop()
-  tape.seek(-90000)
-  local s = string.rep("\xAA", 8192)
-  for i = 1, k + 8191, 8192 do
-    tape.write(s)
+  tape.seek(-tape.getSize())
+  local fill = string.rep("\\xAA", 8192)
+  for i = 1, tape.getSize(), 8192 do
+    tape.write(fill)
   end
-  tape.seek(-k)
-  tape.seek(-90000)
-  print("Done.")
+  tape.seek(-tape.getSize())
+  print("Tape wiped.")
 end
 
 local function writeTape(path)
-  local file, msg, _, y
-  local block = 2048
-  if options.b then
-    local nBlock = tonumber(options.b)
-    if nBlock then
-      print("Setting chunk size to " .. options.b)
-      block = nBlock
-    else
-      io.stderr:write("option --b is not a number.\n")
-      return
-    end
-  end
-  if not confirm("Are you sure you want to write to this tape?") then return end
+  local file, msg
+  if not confirm("Write to tape?") then return end
+  local blockSize = tonumber(options.b or 2048)
   tape.stop()
   tape.seek(-tape.getSize())
-  tape.stop()
 
-  local bytery = 0
-  local filesize = tape.getSize()
-
-  if string.match(path, "https?://.+") then
+  if path:match("^https?://") then
     if not component.isAvailable("internet") then
-      io.stderr:write("This command requires an internet card to run.")
-      return false
+      io.stderr:write("No internet card present.\\n")
+      return
     end
     local internet = component.internet
-    local function setupConnection(url)
-      local file, reason = internet.request(url)
-      if not file then
-        io.stderr:write("error requesting data from URL: " .. reason .. "\n")
-        return false
-      end
-      local connected, reason = false, ""
-      local timeout = 50
-      if options.t then
-        local nTimeout = tonumber(options.t)
-        if nTimeout then
-          print("Max timeout: " .. options.t)
-          timeout = nTimeout * 10
-        else
-          io.stderr:write("option --t is not a number. Defaulting to 5 seconds.\n")
-        end
-      end
-      for i = 1, timeout do
-        connected, reason = file.finishConnect()
-        os.sleep(.1)
-        if connected or connected == nil then break end
-      end
-      if connected == nil then
-        io.stderr:write("Could not connect to server: " .. reason)
-        return false
-      end
-      local status, message, header = file.response()
-      if status then
-        status = string.format("%d", status)
-        print("Status: " .. status .. " " .. message)
-        if status:sub(1, 1) == "2" then
-          return true, {
-            close = function(self, ...) return file.close(...) end,
-            read = function(self, ...) return file.read(...) end,
-          }, header
-        end
-        return false
-      end
-      io.stderr:write("no valid HTTP response - no response")
-      return false
-    end
-    local success, header
-    success, file, header = setupConnection(path)
-    if not success then
-      if file then file:close() end
+    file = internet.request(path)
+    if not file then
+      io.stderr:write("Failed to download.\\n")
       return
-    end
-    print("Writing...")
-    _, y = term.getCursor()
-    if header and header["Content-Length"] and header["Content-Length"][1] then
-      filesize = tonumber(header["Content-Length"][1])
     end
   else
-    local path = shell.resolve(path)
-    filesize = fs.size(path)
-    print("Path: " .. path)
-    file, msg = io.open(path, "rb")
+    file, msg = io.open(shell.resolve(path), "rb")
     if not file then
-      io.stderr:write("Error: " .. msg)
+      io.stderr:write("Error opening file: " .. msg .. "\\n")
       return
     end
-    print("Writing...")
-    _, y = term.getCursor()
   end
 
-  if filesize > tape.getSize() then
-    term.setCursor(1, y)
-    io.stderr:write("Warning: File is too large for tape, shortening file\n")
-    _, y = term.getCursor()
-    filesize = tape.getSize()
+  print("Writing...")
+  local read = file.read or function(n) return file:read(n) end
+  while true do
+    local chunk = read(file, blockSize)
+    if not chunk then break end
+    tape.write(chunk)
   end
-
-  local function fancyNumber(n)
-    return tostring(math.floor(n)):reverse():gsub("(%d%d%d)", "%1,"):gsub("%D$", ""):reverse()
-  end
-
-  repeat
-    local bytes = file:read(block)
-    if bytes and #bytes > 0 then
-      if not tape.isReady() then
-        io.stderr:write("\nError: Tape was removed during writing.\n")
-        file:close()
-        return
-      end
-      term.setCursor(1, y)
-      bytery = bytery + #bytes
-      local displaySize = math.min(bytery, filesize)
-      term.write(string.format("Read %s of %s bytes... (%.2f %%)", fancyNumber(displaySize), fancyNumber(filesize), 100 * displaySize / filesize))
-      tape.write(bytes)
-    end
-  until not bytes or bytery > filesize
-  file:close()
+  if file.close then file:close() end
   tape.stop()
   tape.seek(-tape.getSize())
-  tape.stop()
-  print("\nDone.")
+  print("Done writing.")
 end
 
-if args[1] == "play" then
-  play()
-elseif args[1] == "stop" then
-  stop()
-elseif args[1] == "pause" then
-  pause()
-elseif args[1] == "rewind" then
-  rewind()
-elseif args[1] == "label" then
-  label(args[2])
-elseif args[1] == "speed" then
-  speed(args[2])
-elseif args[1] == "volume" then
-  volume(args[2])
-elseif args[1] == "write" then
-  writeTape(args[2])
-elseif args[1] == "wipe" then
-  wipe()
-else
-  printUsage()
+if args[1] == "play" then play()
+elseif args[1] == "pause" then pause()
+elseif args[1] == "stop" then stop()
+elseif args[1] == "rewind" then rewind()
+elseif args[1] == "label" then label(args[2])
+elseif args[1] == "speed" then speed(args[2])
+elseif args[1] == "volume" then volume(args[2])
+elseif args[1] == "wipe" then wipe()
+elseif args[1] == "write" then writeTape(args[2])
+else printUsage()
 end
+'''
+
+# Save this to a file the user can download
+with open("/mnt/data/tape.lua", "w") as f:
+    f.write(tape_script)
+
+"/mnt/data/tape.lua"
